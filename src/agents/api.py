@@ -87,7 +87,7 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 class MoonDevAPI:
-    def __init__(self, api_key=None, base_url="http://api.moondev.com:8000"):
+    def __init__(self, api_key=None, base_url="http://api.moondev.com:8000", cache_ttl_seconds=300):
         """Initialize the API handler"""
         self.base_dir = PROJECT_ROOT / "src" / "agents" / "api_data"
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +95,9 @@ class MoonDevAPI:
         self.base_url = base_url
         self.headers = {'X-API-Key': self.api_key} if self.api_key else {}
         self.session = requests.Session()
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._csv_cache = {}
+        self._cache_timestamps = {}
         
         print("🌙 Moon Dev API: Ready to rock! 🚀")
         print(f"📂 Cache directory: {self.base_dir.absolute()}")
@@ -104,8 +107,41 @@ class MoonDevAPI:
         else:
             print("🔑 API key loaded successfully!")
 
+    def _use_cache(self, filename):
+        """Return a cached CSV DataFrame if the file is still fresh."""
+        if self.cache_ttl_seconds <= 0:
+            return None
+
+        save_path = self.base_dir / filename
+        if not save_path.exists():
+            return None
+
+        last_modified = save_path.stat().st_mtime
+        cached_at = self._cache_timestamps.get(filename)
+        if cached_at is not None and time.time() - cached_at < self.cache_ttl_seconds:
+            return self._csv_cache.get(filename)
+
+        if cached_at is None and time.time() - last_modified < self.cache_ttl_seconds:
+            cached_df = self._csv_cache.get(filename)
+            if cached_df is None:
+                try:
+                    cached_df = pd.read_csv(save_path)
+                except Exception:
+                    return None
+            self._csv_cache[filename] = cached_df
+            self._cache_timestamps[filename] = last_modified
+            return cached_df
+
+        return None
+
     def _fetch_csv(self, filename, limit=None):
-        """Fetch CSV data from the API"""
+        """Fetch CSV data from the API with a short-lived cache to avoid repeated remote calls."""
+        save_path = self.base_dir / filename
+        cached_df = self._use_cache(filename)
+        if cached_df is not None:
+            print(f"♻️ Reusing cached {filename} ({len(cached_df)} rows)")
+            return cached_df
+
         try:
             print(f"🚀 Moon Dev API: Fetching {filename}{'with limit '+str(limit) if limit else ''}...")
             
@@ -117,11 +153,12 @@ class MoonDevAPI:
             response.raise_for_status()
             
             # Save to cache and read
-            save_path = self.base_dir / filename
             with open(save_path, 'wb') as f:
                 f.write(response.content)
             
             df = pd.read_csv(save_path)
+            self._csv_cache[filename] = df
+            self._cache_timestamps[filename] = time.time()
             print(f"✨ Successfully loaded {len(df)} rows from {filename}")
             return df
                 
