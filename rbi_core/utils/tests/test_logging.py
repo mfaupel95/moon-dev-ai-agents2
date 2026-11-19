@@ -47,38 +47,29 @@ class TestGetLogger:
 class TestAsyncQueueListener:
     """Verify that QueueListener properly drains logs asynchronously."""
     
-    def test_queue_listener_starts_and_drains(self):
+    def test_queue_listener_starts_and_drains(self, monkeypatch):
         """QueueListener should be started if a queue handler targets standard handlers."""
         import rbi_core.utils.logging as rbi_logging
         
-        # Reset initialized state
-        rbi_logging._initialized = False
-        if rbi_logging._listener:
-            rbi_logging.flush_logs()
-            
+        from queue import Queue
+
         test_stream = io.StringIO()
         target_handler = logging.StreamHandler(test_stream)
         target_handler.setFormatter(logging.Formatter("%(message)s"))
-        
-        # Mock the root logger to have our target handler (as if loaded from yaml)
-        root = logging.getLogger()
-        root.handlers = [target_handler]
-        
-        # Now trigger fallback init which starts listener
-        rbi_logging._ensure_initialized()
-        
-        assert rbi_logging._listener is not None
-        
-        # Log via the queue
-        rbi_logging.log_queue.put(
-            logging.LogRecord("test", logging.INFO, "", 0, "async test message", (), None)
-        )
-        
-        # Wait for queue to drain and flush
-        rbi_logging.flush_logs()
-        root.handlers = [] # cleanup
-        
-        assert "async test message" in test_stream.getvalue()
+        monkeypatch.setattr(logging.getLogger(), "handlers", [target_handler])
+        monkeypatch.setattr(rbi_logging, "log_queue", Queue())
+        monkeypatch.setattr(rbi_logging, "_listener", None)
+
+        rbi_logging._start_queue_listener()
+        try:
+            assert rbi_logging._listener is not None
+            rbi_logging.log_queue.put(
+                logging.LogRecord("test", logging.INFO, "", 0, "async test message", (), None)
+            )
+        finally:
+            rbi_logging.flush_logs()
+
+        assert test_stream.getvalue() == "async test message\n"
 
 
 class TestRequiredFieldsFilter:

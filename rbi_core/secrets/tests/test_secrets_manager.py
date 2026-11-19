@@ -45,6 +45,18 @@ class TestGetSecret:
             mock_get.assert_called_once_with(SERVICE, KEY)
 
 
+@pytest.fixture
+def capture_secret_logs(caplog):
+    logger = logging.getLogger("rbi_core.secrets.secrets_manager")
+    # Capture at the source without depending on root handler configuration.
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
+
+
 class TestSetSecret:
 
     def test_calls_keyring_set_password(self):
@@ -52,20 +64,20 @@ class TestSetSecret:
             SecretsManager.set_secret(SERVICE, KEY, VALUE)
             mock_set.assert_called_once_with(SERVICE, KEY, VALUE)
 
-    def test_emits_structured_log_on_set(self, caplog):
+    def test_emits_structured_log_on_set(self, capture_secret_logs):
         with patch("keyring.set_password"):
-            with caplog.at_level(logging.INFO, logger="rbi_core.secrets.secrets_manager"):
-                SecretsManager.set_secret(SERVICE, KEY, VALUE)
-        # Verify the log event occurred (structured logging)
-        assert any("secret_stored" in r.message for r in caplog.records) or \
-               any(r.levelno == logging.INFO for r in caplog.records)
+            SecretsManager.set_secret(SERVICE, KEY, VALUE)
+        assert any(
+            record.levelno == logging.INFO
+            and getattr(record, "event", None) == "secret_stored"
+            for record in capture_secret_logs.records
+        )
 
-    def test_does_not_log_secret_value(self, caplog):
+    def test_does_not_log_secret_value(self, capture_secret_logs):
         with patch("keyring.set_password"):
-            with caplog.at_level(logging.DEBUG, logger="rbi_core.secrets.secrets_manager"):
-                SecretsManager.set_secret(SERVICE, KEY, VALUE)
-        # The actual secret value must NEVER appear in any log record
-        for record in caplog.records:
+            SecretsManager.set_secret(SERVICE, KEY, VALUE)
+        assert capture_secret_logs.records
+        for record in capture_secret_logs.records:
             assert VALUE not in record.getMessage()
             assert VALUE not in str(record.__dict__)
 
